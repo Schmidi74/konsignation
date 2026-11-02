@@ -22,9 +22,11 @@
   .mut { color:var(--mut); font-size:14px; }
   .item { border-top:1px solid var(--line); padding:8px 0; font-size:14px; }
   .item:first-child { border-top:0; }
+  .item.red { color:var(--bad); } .item.red .mut { color:var(--bad); }
+  .item.orange { color:var(--warn); } .item.orange .mut { color:var(--warn); }
   .tag { display:inline-block; font-size:12px; padding:2px 8px; border-radius:999px; color:#fff; margin-right:6px; }
   .t-fehlend { background:var(--bad); } .t-zus { background:var(--warn); } .t-charge { background:var(--warn); }
-  .t-mhd { background:var(--warn); } .t-abg { background:var(--bad); } .t-art { background:var(--warn); } .t-dopp { background:var(--warn); }
+  .t-mhd { background:var(--warn); } .t-abg { background:var(--warn); } .t-art { background:var(--warn); } .t-dopp { background:var(--warn); }
   .ok { color:var(--ok); font-weight:600; }
   .err { color:var(--bad); }
   code { font-size:13px; word-break:break-all; }
@@ -375,7 +377,7 @@ function renderResult(R) {
     const list = R[k];
     if (!list.length) return "";
     return `<div style="margin-top:10px"><span class="tag ${cls}">${label} (${list.length})</span><span class="mut">${hint}</span>` +
-      list.map(x => `<div class="item">${lineFor(k, x)}</div>`).join("") + `</div>`;
+      list.map(x => `<div class="item ${k === "fehlend" ? "red" : "orange"}">${lineFor(k, x)}</div>`).join("") + `</div>`;
   }).join("");
   if (!total) $("resBody").innerHTML = "";
   $("resSec").scrollIntoView({ behavior: "smooth" });
