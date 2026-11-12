@@ -117,7 +117,7 @@ function parseSollText(text) {
       rows.push(cur);
       continue;
     }
-    if (!standort && /K\d{3}_[A-Z0-9]/i.test(l) && !/^(Serie|MHD|Bestand)/i.test(l)) {
+    if (/K\d{3}_[A-Z0-9]/i.test(l) && !/^(Serie|MHD|Bestand)/i.test(l) && (!standort || (l.includes(" - ") && !standort.includes(" - ")))) {
       standort = l.replace(/_0\b/, "_O").replace(/\s+/g, " ").trim();
       continue;
     }
@@ -161,6 +161,30 @@ async function readXlsx(file) {
 }
 
 async function readPdf(file) {
+  if (!window.pdfjsLib) throw new Error("PDF-Bibliothek nicht geladen (Internet prüfen).");
+  const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
+  let text = "";
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const tc = await page.getTextContent();
+    const byY = new Map();
+    for (const it of tc.items) {
+      if (!it.str || !it.str.trim()) continue;
+      const y = Math.round(it.transform[5]);
+      if (!byY.has(y)) byY.set(y, []);
+      byY.get(y).push(it);
+    }
+    for (const y of [...byY.keys()].sort((a, b) => b - a)) {
+      const row = byY.get(y).sort((a, b) => a.transform[4] - b.transform[4]);
+      text += row.map(i => i.str).join(" ") + "\n";
+    }
+    text += "\n";
+  }
+  if (text.replace(/\s/g, "").length > 300) return text;   // PDF hat eine Textebene
+  return await readPdfOcr(file);                           // gescannte PDF: OCR
+}
+
+async function readPdfOcr(file) {
   if (!window.pdfjsLib || !window.Tesseract) throw new Error("Bibliotheken nicht geladen (Internet prüfen).");
   const buf = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
