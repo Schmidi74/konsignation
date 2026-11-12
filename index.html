@@ -117,8 +117,9 @@ function parseSollText(text) {
       rows.push(cur);
       continue;
     }
-    if (/K\d{3}_[A-Z0-9]/i.test(l) && !/^(Serie|MHD|Bestand)/i.test(l) && (!standort || (l.includes(" - ") && !standort.includes(" - ")))) {
-      standort = l.replace(/_0\b/, "_O").replace(/\s+/g, " ").trim();
+    const lz = l.replace(/\s*_\s*/g, "_");   // pdf.js setzt Leerzeichen um "_" ("K023 _ G")
+    if (/K\d{3}_[A-Z0-9]/i.test(lz) && !/^(Serie|MHD|Bestand)/i.test(l) && (!standort || (lz.includes(" - ") && !standort.includes(" - ")))) {
+      standort = lz.replace(/_0\b/, "_O").replace(/\s+/g, " ").trim();
       continue;
     }
     if (!cur) continue;
