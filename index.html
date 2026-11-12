@@ -103,10 +103,35 @@ function parseYYMMDD(s) {
 const normRef = r => String(r||"").replace(/^(GET|IVAS)-/i, "").toUpperCase().trim();
 
 /* ---------- Soll-PDF -> Text -> Positionen ---------- */
+function parseTableLine(l) {
+  const m = l.match(/^(GET|IVAS)-(\S+)\s+(\d{2}\.\d{2}\.\d{4})\s+(.+)$/i);
+  if (!m) return null;
+  const prefix = m[1].toUpperCase();
+  let code = m[2];
+  if (prefix === "GET") code = code.replace(/O/g, "0");
+  let rest = m[4];
+  let sn = null, charge = null, qty = 1;
+  let c;
+  if ((c = rest.match(/^(\d{10})\s*\/\s*([0-9A-Za-z]{5})\s+(.*)$/))) { sn = c[1]; charge = c[2]; rest = c[3]; }
+  else if ((c = rest.match(/^(\d{10})29010([0-9A-Za-z]{5})\s+(.*)$/))) { sn = c[1]; charge = c[2]; rest = c[3]; }
+  else if ((c = rest.match(/^(\d{10})\s+(.*)$/))) { sn = c[1]; rest = c[2]; }
+  else if ((c = rest.match(/^(\d{7})\s+(.*)$/))) { charge = c[1]; rest = c[2]; }
+  const q = rest.match(/\s(\d+)\s*Stk\.?\s*$/);
+  if (q) { qty = +q[1]; rest = rest.slice(0, q.index); }
+  const art = prefix + "-" + code;
+  return { standort: "", ref: normRef(art), art, bez: rest.trim(), sn, charge, qty,
+           mhd: parseDMY(m[3]), mhdRaw: m[3], unklar: false };
+}
+
 function parseSollText(text) {
   const lines = text.split(/\n/).map(l => l.trim()).filter(Boolean);
   const rows = []; let cur = null; let standort = "";
   for (const l of lines) {
+    const tb = parseTableLine(l);
+    if (tb) { tb.standort = standort; rows.push(tb); cur = tb; continue; }
+    if (!standort && !/GET-|IVAS-/.test(l) && /(Spital|Klinik|Universit|Hospital)/i.test(l) && l.length < 60) {
+      standort = l.replace(/\s+/g, " ").trim();   // Tabellenformat ohne K-Code: Kundenname als Standort
+    }
     const art = l.match(/^(GET|IVAS)-(\S+)\s*-\s*(.*)$/i);
     if (art) {
       const prefix = art[1].toUpperCase();
