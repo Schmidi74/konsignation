@@ -33,7 +33,7 @@
 </style>
 </head>
 <body>
-<header id="hdr">Konsignationsabgleich</header>
+<header id="hdr">Konsignationsabgleich <span style="font-size:12px;opacity:.7">· Version 12.11. 09:40</span></header>
 <main>
 
 <section>
@@ -65,7 +65,7 @@
   <h2>3 · Ergebnis</h2>
   <div id="resSum"></div>
   <div id="resBody"></div>
-  <div class="row"><button id="btnCsv">CSV herunterladen</button></div>
+  <div class="row"><button class="primary" id="btnPdf">PDF für Unterschrift</button><button id="btnCsv">CSV herunterladen</button></div>
 </section>
 
 </main>
@@ -74,6 +74,7 @@
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <script>
 if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
@@ -253,7 +254,7 @@ $("btnOcr").addEventListener("click", async () => {
     soll = res.rows.map(r => ({ ...r }));
     $("sollInfo").innerHTML = `<b>${soll.length} Positionen</b> · ${esc(res.standort || "Standort nicht erkannt")}` +
       (soll.some(s => !s.sn && !s.charge && s.mhdRaw) ? `<div class="err">Achtung: ${soll.filter(s=>!s.sn && !s.charge && s.mhdRaw).length} Position(en) ohne Seriennummer und ohne Charge.</div>` : "");
-    $("hdr").textContent = "Konsignationsabgleich" + (res.standort ? " · " + res.standort : "");
+    $("hdr").textContent = "Konsignationsabgleich" + (res.standort ? " · " + res.standort : "") + " · V 12.11. 09:40";
     document.title = "Konsignationsabgleich" + (res.standort ? " · " + res.standort : "");
     updateCompare();
   } catch (e) {
@@ -412,6 +413,7 @@ function compare() {
     if (x.rem > 0) R.fehlend.push({ ...x, missing: x.rem });
     if (x.mhd && dayOf(x.mhd) < today_ && !R.abg.some(a => a.item === x)) R.abg.push({ kind: "Liste", item: x });
   });
+  soll.forEach(x => { x.found = (x.sn ? 1 : (x.qty || 1)) - x.rem; });
   lastResult = R;
   renderResult(R);
 }
@@ -455,6 +457,110 @@ function renderResult(R) {
 }
 
 $("btnCompare").addEventListener("click", compare);
+
+function buildPdf() {
+  if (!lastResult) return;
+  const R = lastResult;
+  const msg = (txt) => $("resSum").insertAdjacentHTML("beforeend", '<div class="err" style="margin-top:8px">' + txt + '</div>');
+  if (!window.jspdf) { msg("PDF-Bibliothek nicht geladen (Internet prüfen)."); return; }
+  const doc = new window.jspdf.jsPDF({ unit: "mm", format: "a4" });
+  const stand = (soll[0] && soll[0].standort) || "Standort unbekannt";
+  const datum = fmtD(new Date());
+  const L = 15, PAGE_BOTTOM = 275;
+  const cols = { art: 15, cs: 62, mhd: 100, soll: 123, ist: 136, st: 150 };
+  const COL = { black: [30, 30, 30], red: [179, 38, 30], orange: [178, 106, 0], grey: [110, 110, 110] };
+  let y = 0;
+
+  const header = () => {
+    doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(...COL.grey);
+    doc.text("Konsignationsabgleich · " + stand + " · " + datum, L, 8);
+    doc.setTextColor(...COL.black);
+    y = 16;
+  };
+  const newPageIfNeeded = (h) => { if (y + h > PAGE_BOTTOM) { doc.addPage(); header(); tableHead(); } };
+  const tableHead = () => {
+    doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.setTextColor(...COL.black);
+    doc.text("Artikel", cols.art, y); doc.text("Serie / Charge", cols.cs, y); doc.text("MHD", cols.mhd, y);
+    doc.text("Soll", cols.soll, y); doc.text("Ist", cols.ist, y); doc.text("Status", cols.st, y);
+    y += 2; doc.setLineWidth(0.2); doc.line(L, y, 195, y); y += 4;
+    doc.setFont("helvetica", "normal");
+  };
+
+  // Kopf
+  header();
+  doc.setFont("helvetica", "bold"); doc.setFontSize(15); doc.setTextColor(...COL.black);
+  doc.text("Konsignationsabgleich – Bestätigung", L, y); y += 8;
+  doc.setFont("helvetica", "normal"); doc.setFontSize(10);
+  doc.text("Standort: " + stand, L, y); y += 5;
+  doc.text("Datum: " + datum, L, y); y += 5;
+  const missing = soll.filter(x => x.rem > 0).length;
+  const devSet = new Set([...R.charge, ...R.mhd, ...R.art].map(x => x.soll));
+  R.abg.forEach(a => { if (a.kind === "Liste") devSet.add(a.item); });
+  doc.text("Soll-Positionen: " + soll.length + " · fehlend: " + missing + " · abweichend: " + devSet.size + " · zusätzlich gescannt: " + R.zus.length, L, y);
+  y += 9;
+
+  tableHead();
+  doc.setFontSize(8);
+  for (const x of soll) {
+    const isMissing = x.rem > 0;
+    const isDev = devSet.has(x);
+    const color = isMissing ? COL.red : (isDev ? COL.orange : COL.black);
+    const status = isMissing ? "FEHLT" : (isDev ? "ABWEICHUNG" : "vorhanden");
+    const cs = x.sn ? (x.sn + (x.charge ? " / " + x.charge : "")) : (x.charge || "–");
+    newPageIfNeeded(9);
+    doc.setTextColor(...color);
+    doc.setFont("helvetica", "bold"); doc.text(String(x.art), cols.art, y);
+    doc.setFont("helvetica", "normal");
+    doc.text(cs, cols.cs, y);
+    doc.text(x.mhdRaw || "–", cols.mhd, y);
+    doc.text(String(x.qty || 1), cols.soll, y);
+    doc.text(String(x.found || 0), cols.ist, y);
+    doc.setFont("helvetica", "bold"); doc.text(status, cols.st, y);
+    y += 4;
+    doc.setFont("helvetica", "normal"); doc.setFontSize(7);
+    doc.text(String(x.bez || "").slice(0, 80), cols.art, y);
+    doc.setFontSize(8);
+    y += 4.5;
+    doc.setTextColor(...COL.black);
+  }
+
+  if (R.zus.length) {
+    newPageIfNeeded(12);
+    y += 4;
+    doc.setFont("helvetica", "bold"); doc.setTextColor(...COL.orange);
+    doc.text("Zusätzlich gescannt (nicht auf der Liste)", L, y); y += 5;
+    doc.setFont("helvetica", "normal");
+    for (const s of R.zus) {
+      newPageIfNeeded(5);
+      doc.text((s.ref || "unbekannt") + "   SN " + (s.sn || "–") + "   Charge " + (s.lot || "–") + "   MHD " + fmtD(s.exp), L, y);
+      y += 4.5;
+    }
+    doc.setTextColor(...COL.black);
+  }
+
+  // Unterschriften
+  if (y + 70 > PAGE_BOTTOM) { doc.addPage(); header(); }   // Unterschriftenblock ohne leere Tabellenkopfzeile
+  y += 10;
+  doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(...COL.black);
+  doc.text("Der Bestand wurde gemeinsam geprüft. Abweichungen sind oben vermerkt.", L, y); y += 14;
+  const sig = (x0, title) => {
+    doc.setFont("helvetica", "bold"); doc.text(title, x0, y);
+    doc.setFont("helvetica", "normal");
+    doc.line(x0, y + 14, x0 + 80, y + 14); doc.text("Name, Funktion", x0, y + 18);
+    doc.line(x0, y + 30, x0 + 80, y + 30); doc.text("Unterschrift", x0, y + 34);
+    doc.line(x0, y + 46, x0 + 40, y + 46); doc.text("Datum", x0, y + 50);
+  };
+  sig(L, "Kunde");
+  sig(110, "MCM Schaublin AG");
+
+  const name = "Konsignationsabgleich_" + stand.replace(/[^\wÀ-ž]+/g, "_") + "_" + datum.replace(/\./g, "-") + ".pdf";
+  doc.save(name);
+}
+
+$("btnPdf").addEventListener("click", () => {
+  try { buildPdf(); }
+  catch (e) { $("resSum").insertAdjacentHTML("beforeend", '<div class="err" style="margin-top:8px">PDF konnte nicht erstellt werden: ' + esc(e.message) + '</div>'); }
+});
 
 $("btnCsv").addEventListener("click", () => {
   if (!lastResult) return;
