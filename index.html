@@ -37,8 +37,8 @@
 <main>
 
 <section>
-  <h2>1 · Soll-Liste (PDF)</h2>
-  <input type="file" id="pdf" accept="application/pdf">
+  <h2>1 · Soll-Liste (PDF oder Excel)</h2>
+  <input type="file" id="pdf" accept=".pdf,.xlsx,.xls,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
   <div class="row"><button class="primary" id="btnOcr">Liste einlesen</button></div>
   <div id="sollInfo" class="mut">Noch keine Liste geladen.</div>
   <div id="ocrProg" class="mut"></div>
@@ -73,6 +73,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script>
 if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
@@ -140,6 +141,25 @@ function parseSollText(text) {
   return { standort, rows };
 }
 
+async function readXlsx(file) {
+  if (!window.XLSX) throw new Error("Excel-Bibliothek nicht geladen (Internet prüfen).");
+  const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
+  const title = String((aoa[0] && aoa[0][0]) || "").trim();
+  const standort = title.replace(/^Inventarliste,?\s*/i, "").trim();
+  const rows = [];
+  for (const r of aoa) {
+    const a = String((r && r[0]) || "").trim();
+    const m = a.match(/^(GET|IVAS)-(.+)$/i);
+    if (!m) continue;   // Kopfzeilen und Gesamttotal überspringen
+    const art = m[1].toUpperCase() + "-" + m[2].trim();
+    rows.push({ standort, ref: normRef(art), art, bez: String(r[1] || ""), sn: null, charge: null,
+                qty: Number(r[2]) || 0, mhd: null, mhdRaw: "", unklar: false });
+  }
+  return { standort, rows };
+}
+
 async function readPdf(file) {
   if (!window.pdfjsLib || !window.Tesseract) throw new Error("Bibliotheken nicht geladen (Internet prüfen).");
   const buf = await file.arrayBuffer();
@@ -171,18 +191,18 @@ $("pdf").addEventListener("input", onPick);
 $("btnOcr").addEventListener("click", async () => {
   const f = $("pdf").files[0];
   if (!f) { $("sollInfo").innerHTML = '<span class="err">Bitte zuerst eine PDF auswählen.</span>'; return; }
-  if (!window.pdfjsLib || !window.Tesseract) {
+  const isXlsx = /\.xlsx?$/i.test(f.name);
+  if (!isXlsx && (!window.pdfjsLib || !window.Tesseract)) {
     $("sollInfo").innerHTML = '<span class="err">Die OCR-Bibliotheken sind nicht geladen. Bitte Internetverbindung prüfen und die Seite neu öffnen.</span>';
     return;
   }
   $("btnOcr").disabled = true;
   $("sollInfo").textContent = "Liste wird gelesen …";
   try {
-    const text = await readPdf(f);
-    const res = parseSollText(text);
+    const res = isXlsx ? await readXlsx(f) : parseSollText(await readPdf(f));
     soll = res.rows.map(r => ({ ...r }));
     $("sollInfo").innerHTML = `<b>${soll.length} Positionen</b> · ${esc(res.standort || "Standort nicht erkannt")}` +
-      (soll.some(s => !s.sn && !s.charge) ? `<div class="err">Achtung: ${soll.filter(s=>!s.sn && !s.charge).length} Position(en) ohne Seriennummer und ohne Charge.</div>` : "");
+      (soll.some(s => !s.sn && !s.charge && s.mhdRaw) ? `<div class="err">Achtung: ${soll.filter(s=>!s.sn && !s.charge && s.mhdRaw).length} Position(en) ohne Seriennummer und ohne Charge.</div>` : "");
     $("hdr").textContent = "Konsignationsabgleich" + (res.standort ? " · " + res.standort : "");
     document.title = "Konsignationsabgleich" + (res.standort ? " · " + res.standort : "");
     updateCompare();
@@ -324,7 +344,8 @@ function compare() {
 
     let m = null;
     if (sc.sn) {
-      m = soll.find(x => x.rem > 0 && x.sn === sc.sn);
+      m = soll.find(x => x.rem > 0 && x.sn === sc.sn)
+       || (sc.ref ? soll.find(x => x.rem > 0 && !x.sn && x.ref === sc.ref) : null);  // Excel-Liste: nur Menge pro Artikel
     } else if (sc.ref) {
       m = soll.find(x => x.rem > 0 && !x.sn && x.ref === sc.ref && x.charge === sc.lot)
        || soll.find(x => x.rem > 0 && !x.sn && x.ref === sc.ref);   // gleicher Artikel, andere Charge
