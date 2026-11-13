@@ -36,6 +36,13 @@
   .ai { font-family: ui-monospace, Menlo, monospace; font-size:12px; color:#333; margin-top:4px; }
   #status { font-size:14px; min-height:20px; }
   #cam { outline:none; }
+  #banner { margin-top:8px; padding:12px; border-radius:10px; font-weight:600; font-size:16px; display:none; color:#fff; }
+  #banner.show { display:block; }
+  #banner.ok { background:#1e7b3a; }
+  #banner.unk { background:#b26a00; }
+  #banner.rep { background:#6b6b66; }
+  #banner.bad { background:#b3261e; }
+  #banner small { display:block; font-weight:400; font-size:13px; opacity:.9; margin-top:2px; }
 </style>
 </head>
 <body>
@@ -50,6 +57,7 @@
   </div>
   <p class="mut" id="httpsHint"></p>
   <video id="cam" playsinline muted></video>
+  <div id="banner"></div>
   <p class="mut" style="margin-top:8px">Jeder erkannte Code wird sofort angezeigt, auch Wiederholungen. Das ist beabsichtigt, damit du siehst, wie oft die Kamera denselben Code liest.</p>
 </section>
 
@@ -98,33 +106,60 @@ const vis = s => String(s).replace(/\u001d/g, "<GS>").replace(/\u001e/g, "<RS>")
 const pad2 = n => String(n).padStart(2, "0");
 const stamp = d => `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3,"0")}`;
 
-/* Generischer GS1-Parser: liefert alle erkannten Application Identifiers */
+/* Generischer GS1-Parser.
+   Regel: Ist ein Trennzeichen (GS) vorhanden, endet ein variables Feld (10, 21) am GS.
+   Ohne Trennzeichen wird die Feldgrenze nur dort gesetzt, wo danach ein vollständiges
+   AI-Feld passt (z. B. 17 + 6 Ziffern). So bleibt eine Charge wie 2614016 intakt. */
 const FIXED = { "00": 18, "01": 14, "02": 14, "11": 6, "13": 6, "15": 6, "16": 6, "17": 6, "20": 2 };
+const BOUND = { "01": 14, "11": 6, "13": 6, "15": 6, "16": 6, "17": 6, "21": 1, "10": 1 };
+function findBoundary(rest) {
+  for (let j = 1; j < rest.length; j++) {
+    const t2 = rest.substr(j, 2);
+    const need = BOUND[t2];
+    if (!need) continue;
+    const after = rest.substr(j + 2, need);
+    if (after.length < need) continue;
+    if (t2 !== "21" && t2 !== "10" && !/^\d+$/.test(after)) continue;
+    return j;
+  }
+  return rest.length;
+}
 function parseGS1(raw) {
-  let s = String(raw).replace(/^\][A-Za-z]\d/, "").replace(/\u001d|\u001e|\u0004/g, "|").trim();
-  const out = {}, order = [];
+  let s = String(raw).replace(/^\][A-Za-z]\d/, "").trim();
+  const out = {}, order = [], guessed = [], dups = [];
+  let rest = null;
   if (/\(\d{2,4}\)/.test(s)) {                       // Klammerformat (01)...(10)...
     const re = /\((\d{2,4})\)([^(]*)/g; let m;
-    while ((m = re.exec(s))) { out[m[1]] = m[2].replace(/\|/g, "").trim(); order.push(m[1]); }
-    return { ai: out, order };
+    while ((m = re.exec(s))) {
+      const k = m[1], v = m[2].replace(/[\u001d\u001e\u0004]/g, "").trim();
+      if (out[k] === undefined) { out[k] = v; order.push(k); } else dups.push(k);
+    }
+    return { ai: out, order, guessed, dups, rest: "" };
   }
-  let i = 0, guessed = null;
-  while (i < s.length) {
-    if (s[i] === "|") { i++; continue; }
-    const a2 = s.substr(i, 2);
-    if (FIXED[a2]) {
-      out[a2] = s.substr(i + 2, FIXED[a2]); order.push(a2); i += 2 + FIXED[a2];
-    } else if (a2 === "21" || a2 === "10") {
-      const m = s.substr(i + 2).match(/^([^|]{1,30}?)(?=\||01|11|13|15|16|17|10|21|$)/);
-      const v = m ? m[1] : s.substr(i + 2, 20);
-      const nxt = s.charAt(i + 2 + v.length);
-      if (nxt && nxt !== "|") (guessed = guessed || []).push(a2);  // Feldende ohne Trennzeichen geraten
-      out[a2] = v; order.push(a2); i += 2 + v.length;
-    } else {
-      break;                                           // Rest ist kein GS1 mehr
+  const hasSep = /[\u001d\u001e\u0004]/.test(s);
+  const segs = hasSep ? s.split(/[\u001d\u001e\u0004]/) : [s];
+  const leftovers = [];
+  for (const seg of segs) {
+    let i = 0;
+    while (i < seg.length) {
+      const a2 = seg.substr(i, 2);
+      if (FIXED[a2]) {
+        const v = seg.substr(i + 2, FIXED[a2]);
+        if (out[a2] === undefined) { out[a2] = v; order.push(a2); } else dups.push(a2);
+        i += 2 + FIXED[a2];
+      } else if (a2 === "10" || a2 === "21") {
+        const r = seg.substr(i + 2);
+        const end = hasSep ? r.length : findBoundary(r);
+        const v = r.substr(0, end);
+        if (!hasSep && end < r.length) guessed.push(a2);
+        if (out[a2] === undefined) { out[a2] = v; order.push(a2); } else dups.push(a2);
+        i += 2 + end;
+      } else {
+        leftovers.push(seg.substr(i)); break;
+      }
     }
   }
-  return { ai: out, order, guessed: guessed || [], rest: s.substr(i).replace(/\|/g, "<GS>") };
+  return { ai: out, order, guessed, dups, rest: leftovers.join("<GS>") };
 }
 function parseYYMMDD(s) {
   if (!s || !/^\d{6}$/.test(s)) return null;
@@ -150,6 +185,7 @@ function analyse(raw) {
   if (info && info.src && /Getinge/i.test(info.src) && !ai["21"]) flags.push(["w", "Getinge ohne Seriennummer (21)"]);
   if (info && info.src && /iVascular/i.test(info.src) && ai["21"]) flags.push(["w", "iVascular mit Seriennummer – unerwartet"]);
   (p.guessed || []).forEach(k => flags.push(["w", `Feldgrenze von (${k}) ohne Trennzeichen geraten – Ergebnis prüfen`]));
+  [...new Set(p.dups || [])].forEach(k => flags.push(["r", `AI (${k}) mehrfach im Code – Parser unsicher`]));
   if (p.rest) flags.push(["w", `Rest nach letztem AI: ${p.rest}`]);
   return { gtin, info, exp, flags, ai, order: p.order, parsedOk: !!(gtin || ai["21"] || ai["10"]) };
 }
@@ -175,20 +211,43 @@ function addScan(rawIn, manual, fmt) {
   if (scans.length > 500) scans.shift();
   save();
   render();
-  feedback(!!a.info && !rep);
+  const flagR = rec.flags.some(f => f[0] === "r");
+  if (rep) showBanner("rep", "Wiederholung", `${rec.ref || rec.gtin || "–"} · wird nicht erneut gezählt`);
+  else if (!a.info) showBanner("unk", "Nicht im Katalog", `GTIN ${a.gtin || "–"} · ${rec.flags.map(f => f[1]).join("; ")}`.slice(0, 160));
+  else if (flagR) showBanner("bad", "Fehler im Code", rec.flags.map(f => f[1]).join("; "));
+  else showBanner("ok", "✓ " + rec.ref, `${rec.name} · Charge ${a.ai["10"] || "–"} · SN ${a.ai["21"] || "–"}`);
+  feedback(!!a.info && !rep && !flagR);
 }
 
-function feedback(ok) {
+/* iOS: AudioContext nur nach einer Benutzeraktion (Klick) starten, sonst bleibt er stumm.
+   Ein einziger Kontext wird wiederverwendet. */
+let audioCtx = null;
+function initAudio() {
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const o = ctx.createOscillator(), g = ctx.createGain();
-    o.connect(g); g.connect(ctx.destination);
-    o.frequency.value = ok ? 1400 : 300; g.gain.value = 0.25;
-    o.start(); o.stop(ctx.currentTime + (ok ? 0.15 : 0.4));
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
   } catch (e) {}
-  try { if (navigator.vibrate) navigator.vibrate(ok ? 80 : [150, 80, 150]); } catch (e) {}
+}
+function beep(ok) {
+  try {
+    if (!audioCtx) return;
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.connect(g); g.connect(audioCtx.destination);
+    o.frequency.value = ok ? 1400 : 300; g.gain.value = 0.3;
+    const t0 = audioCtx.currentTime;
+    o.start(t0); o.stop(t0 + (ok ? 0.15 : 0.4));
+  } catch (e) {}
+}
+function feedback(ok) {
+  beep(ok);
+  try { if (navigator.vibrate) navigator.vibrate(ok ? 80 : [150, 80, 150]); } catch (e) {}  // iPhone: keine Vibration im Browser
   const box = $("cam");
-  if (box) { box.style.outline = ok ? "6px solid #1e7b3a" : "6px solid #b3261e"; setTimeout(() => { box.style.outline = "none"; }, 500); }
+  if (box) { box.style.outline = ok ? "6px solid #1e7b3a" : "6px solid #b3261e"; setTimeout(() => { box.style.outline = "none"; }, 700); }
+}
+function showBanner(kind, title, sub) {
+  const b = $("banner");
+  b.className = "show " + kind;
+  b.innerHTML = esc(title) + (sub ? `<small>${esc(sub)}</small>` : "");
 }
 
 function render() {
@@ -239,7 +298,7 @@ function load() {
   } catch (e) { scans = []; }
 }
 
-$("btnAdd").addEventListener("click", () => { addScan($("manual").value, true, "manuell"); $("manual").value = ""; });
+$("btnAdd").addEventListener("click", () => { initAudio(); addScan($("manual").value, true, "manuell"); $("manual").value = ""; });
 $("manual").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("btnAdd").click(); } });
 
 $("btnCopy").addEventListener("click", async () => {
@@ -269,6 +328,7 @@ $("btnClear").addEventListener("click", () => {
 /* Kamera */
 if (!window.isSecureContext) $("httpsHint").textContent = "Achtung: Kamera nur über HTTPS (GitHub Pages) verfügbar.";
 $("btnCam").addEventListener("click", async () => {
+  initAudio();
   if (!window.ZXing) { alert("Scan-Bibliothek nicht geladen (Internetverbindung prüfen)."); return; }
   try {
     reader = new ZXing.BrowserMultiFormatReader();
