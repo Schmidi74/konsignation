@@ -378,7 +378,8 @@ function addScan(rawIn, manual) {
   const p = parseGS1(raw);
   const gtin = p["01"] ? p["01"].padStart(14, "0") : null;
   // Kamera-Fremdcodes (z. B. EAN auf der Verpackung) sind kein Produkt: nicht zählen, nur anzeigen.
-  if (!manual && !gtin && !p["21"] && !p["10"]) {
+  // Kamera-Codes ohne GTIN (01) sind keine Produktcodes. Der Code 10162682 (EAN-8) wurde sonst als Charge gelesen.
+  if (!manual && !gtin) {
     showBanner("rep", "Kein GS1-Code – nicht gezählt", raw.slice(0, 60));
     return;
   }
