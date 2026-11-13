@@ -416,7 +416,7 @@ $("btnCam").addEventListener("click", async () => {
     reader = new ZXing.BrowserMultiFormatReader();
     $("cam").classList.add("on");
     $("btnCam").disabled = true; $("btnStop").disabled = false;
-    await reader.decodeFromConstraints({ video: { facingMode: { ideal: "environment" } } }, $("cam"), (result) => {
+    await reader.decodeFromConstraints({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } }, $("cam"), (result) => {
       if (result) addScan(result.getText(), false);
     });
   } catch (e) {

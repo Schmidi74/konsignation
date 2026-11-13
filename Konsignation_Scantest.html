@@ -64,7 +64,7 @@
 <section>
   <h2>2 · Code manuell einfügen (falls die Kamera nicht liest)</h2>
   <textarea id="manual" rows="3" placeholder="GS1-Text oder Klartext einfügen"></textarea>
-  <div class="row" style="margin-top:8px"><button id="btnAdd">Erfassen</button></div>
+  <div class="row" style="margin-top:8px"><button id="btnAdd">Erfassen</button><button id="btnPlus">Letzten Code +1</button></div>
 </section>
 
 <section>
@@ -99,7 +99,8 @@ const MAP = {"00384401010708":{"ref":"HEK06/120CPUT (1)","name":"HEK06/120CPUT (
 
 const KEY = "scantest_log_v1";
 let scans = [];           // {t, rel, raw, parsed, gtin, info, flags, rep, fmt, src}
-let reader = null, camStart = 0, lastRaw = "", lastAt = 0;
+let reader = null, camStart = 0, lastRaw = "", lastAt = 0, lastRec = null;
+const REPEAT_MS = 1500;
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const vis = s => String(s).replace(/\u001d/g, "<GS>").replace(/\u001e/g, "<RS>").replace(/\u0004/g, "<EOT>").replace(/\u001c/g, "<FS>");
@@ -197,8 +198,13 @@ function addScan(rawIn, manual, fmt) {
   if (!raw.trim()) return;
   const now = Date.now();
   // Wiederholung = gleicher Text innerhalb 2,5 s. Wird nur markiert, nicht verworfen.
-  const rep = !manual && raw === lastRaw && now - lastAt < 2500;
-  if (!manual) { lastRaw = raw; lastAt = now; }
+  // Kamera liest denselben Code im Standbild mehrfach. Gleicher Code ohne Pause (< 1,5 s) = Wiederholung.
+  // Nach einer Pause gilt er als neuer Karton, auch bei gleicher Charge.
+  let rep = false;
+  if (!manual) {
+    rep = raw === lastRaw && now - lastAt < REPEAT_MS;
+    lastRaw = raw; lastAt = now;
+  }
   const a = analyse(raw);
   const rec = {
     t: new Date(), rel: camStart ? ((now - camStart) / 1000).toFixed(2) : null,
@@ -206,13 +212,13 @@ function addScan(rawIn, manual, fmt) {
     gtin: a.gtin, info: a.info, exp: a.exp, flags: a.flags, ai: a.ai, order: a.order,
     ref: a.info ? a.info.ref : null, name: a.info ? a.info.name : null, src: a.info ? a.info.src : null,
   };
-  if (rep) rec.flags = [["w", "Wiederholung (gleicher Code < 2,5 s)"]].concat(rec.flags);
-  scans.push(rec);
+  if (rep) rec.flags = [["w", "Wiederholung (ohne Pause)"]].concat(rec.flags);
+  scans.push(rec); lastRec = rec;
   if (scans.length > 500) scans.shift();
   save();
   render();
   const flagR = rec.flags.some(f => f[0] === "r");
-  if (rep) showBanner("rep", "Wiederholung", `${rec.ref || rec.gtin || "–"} · wird nicht erneut gezählt`);
+  if (rep) showBanner("rep", "Wiederholung – nicht gezählt", "Zweiter Karton mit gleicher Charge? Dann Button „Letzten Code +1“ nutzen.");
   else if (!a.info) showBanner("unk", "Nicht im Katalog", `GTIN ${a.gtin || "–"} · ${rec.flags.map(f => f[1]).join("; ")}`.slice(0, 160));
   else if (flagR) showBanner("bad", "Fehler im Code", rec.flags.map(f => f[1]).join("; "));
   else showBanner("ok", "✓ " + rec.ref, `${rec.name} · Charge ${a.ai["10"] || "–"} · SN ${a.ai["21"] || "–"}`);
@@ -299,6 +305,7 @@ function load() {
 }
 
 $("btnAdd").addEventListener("click", () => { initAudio(); addScan($("manual").value, true, "manuell"); $("manual").value = ""; });
+$("btnPlus").addEventListener("click", () => { initAudio(); if (lastRec) addScan(lastRec.raw, true, "manuell +1"); else $("status").textContent = "Noch kein Code erfasst."; });
 $("manual").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("btnAdd").click(); } });
 
 $("btnCopy").addEventListener("click", async () => {
@@ -335,7 +342,7 @@ $("btnCam").addEventListener("click", async () => {
     camStart = Date.now(); lastRaw = ""; lastAt = 0;
     $("cam").classList.add("on");
     $("btnCam").disabled = true; $("btnStop").disabled = false;
-    await reader.decodeFromConstraints({ video: { facingMode: { ideal: "environment" } } }, $("cam"), (result, err) => {
+    await reader.decodeFromConstraints({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } }, $("cam"), (result, err) => {
       if (result) {
         let fmt = "Kamera";
         try { const f = result.getBarcodeFormat(); fmt = "Kamera " + (Object.keys(ZXing.BarcodeFormat).find(k => ZXing.BarcodeFormat[k] === f) || f); } catch (e) {}
