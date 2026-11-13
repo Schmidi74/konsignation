@@ -46,7 +46,7 @@
 </style>
 </head>
 <body>
-<header>Scan-Test · K023_G · V 13.11. 13:20<small>Nur Erfassung, kein Abgleich. Zeigt jeden erkannten Code roh und zerlegt.</small></header>
+<header>Scan-Test · K023_G · V 13.11. 13:24<small>Nur Erfassung, kein Abgleich. Zeigt jeden erkannten Code roh und zerlegt.</small></header>
 <main>
 
 <section>
@@ -101,7 +101,7 @@ const MAP = {"00384401010708":{"ref":"HEK06/120CPUT (1)","name":"HEK06/120CPUT (
 const KEY = "scantest_log_v1";
 let scans = [];           // {t, rel, raw, parsed, gtin, info, flags, rep, fmt, src}
 let reader = null, camStart = 0, lastRaw = "", lastAt = 0, lastRec = null;
-const REPEAT_MS = 8000;
+const REPEAT_MS = 1500;
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const vis = s => String(s).replace(/\u001d/g, "<GS>").replace(/\u001e/g, "<RS>").replace(/\u0004/g, "<EOT>").replace(/\u001c/g, "<FS>");
@@ -215,7 +215,7 @@ function addScan(rawIn, manual, fmt) {
     gtin: a.gtin, info: a.info, exp: a.exp, flags: a.flags, ai: a.ai, order: a.order,
     ref: a.info ? a.info.ref : null, name: a.info ? a.info.name : null, src: a.info ? a.info.src : null,
   };
-  if (rep) rec.flags = [["w", "Wiederholung (ohne Pause, < 8 s)"]].concat(rec.flags);
+  if (rep) rec.flags = [["w", "Wiederholung (ohne Pause)"]].concat(rec.flags);
   scans.push(rec); lastRec = rec;
   if (scans.length > 500) scans.shift();
   save();

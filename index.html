@@ -92,7 +92,7 @@ let soll = [];   // {standort, ref, art, bez, sn, charge, mhd(Date|null), mhdRaw
 let scans = [];  // {raw, gtin, ref, name, sn, lot, exp(Date|null), dup}
 let reader = null;
 let lastRaw = "", lastAt = 0, lastRec = null;
-const REPEAT_MS = 8000;
+const REPEAT_MS = 1500;
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -368,7 +368,7 @@ function addScan(rawIn, manual) {
   const raw = rawIn.trim();
   if (!raw) return;
   const now = Date.now();
-  // Kamera liest denselben Code im Standbild mehrfach: gleicher Code ohne Pause (< 8 s) wird nicht gezählt.
+  // Kamera liest denselben Code im Standbild mehrfach: gleicher Code ohne Pause (< 1,5 s) wird nicht gezählt.
   // Nach einer Pause zählt er als neuer Karton, auch bei gleicher Charge.
   if (!manual) {
     const same = raw === lastRaw && now - lastAt < REPEAT_MS;
