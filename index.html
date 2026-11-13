@@ -30,6 +30,13 @@
   .ok { color:var(--ok); font-weight:600; }
   .err { color:var(--bad); }
   code { font-size:13px; word-break:break-all; }
+#banner { margin-top:8px; padding:12px; border-radius:10px; font-weight:600; font-size:16px; display:none; color:#fff; }
+  #banner.show { display:block; }
+  #banner.ok { background:#1e7b3a; }
+  #banner.unk { background:#b26a00; }
+  #banner.rep { background:#6b6b66; }
+  #banner.bad { background:#b3261e; }
+  #banner small { display:block; font-weight:400; font-size:13px; opacity:.9; margin-top:2px; }
 </style>
 </head>
 <body>
@@ -51,10 +58,12 @@
     <button id="btnStop" disabled>Kamera stoppen</button>
   </div>
   <video id="cam" playsinline muted></video>
+  <div id="banner"></div>
   <div class="mut" style="margin-top:6px">Kamera braucht HTTPS. Falls der Barcode nicht erkannt wird, Code unten einfügen.</div>
   <div class="row">
     <input type="text" id="manual" placeholder="Code einfügen (GS1-Text)">
     <button id="btnAdd">Hinzufügen</button>
+    <button id="btnPlus">Letzten Code +1</button>
   </div>
   <div class="row"><span class="mut" id="scanCount">0 gescannt</span></div>
   <div id="scanList"></div>
@@ -82,7 +91,8 @@ const MAP = {"00384401010708":{"ref":"HEK06/120CPUT (1)","name":"HEK06/120CPUT (
 let soll = [];   // {standort, ref, art, bez, sn, charge, mhd(Date|null), mhdRaw}
 let scans = [];  // {raw, gtin, ref, name, sn, lot, exp(Date|null), dup}
 let reader = null;
-let lastRaw = "", lastAt = 0;
+let lastRaw = "", lastAt = 0, lastRec = null;
+const REPEAT_MS = 1500;
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
@@ -264,68 +274,105 @@ $("btnOcr").addEventListener("click", async () => {
 });
 
 /* ---------- GS1 ---------- */
-function parseGS1(raw) {
-  let s = String(raw).replace(/^\][A-Za-z]\d/, "").replace(/[\u001d\u001e\u0004]/g, "|").trim();
-  const out = {};
-  // Klammer-Format: (01)...(10)...
-  if (/\(\d{2,4}\)/.test(s)) {
-    const re = /\((\d{2,4})\)([^(]*)/g; let m;
-    while ((m = re.exec(s))) out[m[1]] = m[2].replace(/\|/g, "").trim();
-    return out;
+/* Generischer GS1-Parser.
+   Regel: Ist ein Trennzeichen (GS) vorhanden, endet ein variables Feld (10, 21) am GS.
+   Ohne Trennzeichen wird die Feldgrenze nur dort gesetzt, wo danach ein vollständiges
+   AI-Feld passt (z. B. 17 + 6 Ziffern). So bleibt eine Charge wie 2614016 intakt. */
+const FIXED = { "00": 18, "01": 14, "02": 14, "11": 6, "13": 6, "15": 6, "16": 6, "17": 6, "20": 2 };
+const BOUND = { "01": 14, "11": 6, "13": 6, "15": 6, "16": 6, "17": 6, "21": 1, "10": 1 };
+function findBoundary(rest) {
+  for (let j = 1; j < rest.length; j++) {
+    const t2 = rest.substr(j, 2);
+    const need = BOUND[t2];
+    if (!need) continue;
+    const after = rest.substr(j + 2, need);
+    if (after.length < need) continue;
+    if (t2 !== "21" && t2 !== "10" && !/^\d+$/.test(after)) continue;
+    return j;
   }
-  // Format ohne Klammern, mit oder ohne Trennzeichen
-  let i = 0;
-  const fixed = { "01": 14, "11": 6, "13": 6, "15": 6, "16": 6, "17": 6 };
-  const NEXT = "(?=01|11|13|15|16|17|10|21|\\||$)";
-  while (i < s.length) {
-    if (s[i] === "|") { i++; continue; }
-    const a2 = s.substr(i, 2);
-    if (fixed[a2]) {
-      out[a2] = s.substr(i + 2, fixed[a2]);
-      i += 2 + fixed[a2];
-    } else if (a2 === "21") {
-      const m = s.substr(i + 2).match(new RegExp("^(.{7,20}?)" + NEXT));
-      const v = m ? m[1] : s.substr(i + 2, 10);
-      out["21"] = v.replace(/\|/g, ""); i += 2 + v.length;
-    } else if (a2 === "10") {
-      const m = s.substr(i + 2).match(new RegExp("^([A-Za-z0-9]{1,20}?)" + NEXT));
-      const v = m ? m[1] : s.substr(i + 2, 20);
-      out["10"] = v.replace(/\|/g, ""); i += 2 + v.length;
-    } else {
-      break;
+  return rest.length;
+}
+function parseGS1Core(raw) {
+  let s = String(raw).replace(/^\][A-Za-z]\d/, "").trim();
+  const out = {}, order = [], guessed = [], dups = [];
+  let rest = null;
+  if (/\(\d{2,4}\)/.test(s)) {                       // Klammerformat (01)...(10)...
+    const re = /\((\d{2,4})\)([^(]*)/g; let m;
+    while ((m = re.exec(s))) {
+      const k = m[1], v = m[2].replace(/[\u001d\u001e\u0004]/g, "").trim();
+      if (out[k] === undefined) { out[k] = v; order.push(k); } else dups.push(k);
+    }
+    return { ai: out, order, guessed, dups, rest: "" };
+  }
+  const hasSep = /[\u001d\u001e\u0004]/.test(s);
+  const segs = hasSep ? s.split(/[\u001d\u001e\u0004]/) : [s];
+  const leftovers = [];
+  for (const seg of segs) {
+    let i = 0;
+    while (i < seg.length) {
+      const a2 = seg.substr(i, 2);
+      if (FIXED[a2]) {
+        const v = seg.substr(i + 2, FIXED[a2]);
+        if (out[a2] === undefined) { out[a2] = v; order.push(a2); } else dups.push(a2);
+        i += 2 + FIXED[a2];
+      } else if (a2 === "10" || a2 === "21") {
+        const r = seg.substr(i + 2);
+        const end = hasSep ? r.length : findBoundary(r);
+        const v = r.substr(0, end);
+        if (!hasSep && end < r.length) guessed.push(a2);
+        if (out[a2] === undefined) { out[a2] = v; order.push(a2); } else dups.push(a2);
+        i += 2 + end;
+      } else {
+        leftovers.push(seg.substr(i)); break;
+      }
     }
   }
-  // Fallback: GTIN irgendwo im Text suchen, falls Parsing scheitert
-  if (!out["01"]) {
-    const g = s.match(/(\d{14})/);
-    if (g) out["01"] = g[1];
-  }
-  return out;
+  return { ai: out, order, guessed, dups, rest: leftovers.join("<GS>") };
 }
-
-function feedback(ok) {
+/* iOS: AudioContext nur nach einer Benutzeraktion (Klick) starten, sonst bleibt er stumm.
+   Ein einziger Kontext wird wiederverwendet. */
+let audioCtx = null;
+function initAudio() {
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const o = ctx.createOscillator(), g = ctx.createGain();
-    o.connect(g); g.connect(ctx.destination);
-    o.frequency.value = ok ? 1400 : 300;
-    g.gain.value = 0.25;
-    o.start(); o.stop(ctx.currentTime + (ok ? 0.15 : 0.4));
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
   } catch (e) {}
-  try { if (navigator.vibrate) navigator.vibrate(ok ? 80 : [150, 80, 150]); } catch (e) {}
+}
+function beep(ok) {
+  try {
+    if (!audioCtx) return;
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.connect(g); g.connect(audioCtx.destination);
+    o.frequency.value = ok ? 1400 : 300; g.gain.value = 0.3;
+    const t0 = audioCtx.currentTime;
+    o.start(t0); o.stop(t0 + (ok ? 0.15 : 0.4));
+  } catch (e) {}
+}
+// Master-Schnittstelle: liefert flache Felder wie bisher (p["01"], p["10"], p["21"], p["17"])
+function parseGS1(raw) { return parseGS1Core(raw).ai; }
+function feedback(ok) {
+  beep(ok);
+  try { if (navigator.vibrate) navigator.vibrate(ok ? 80 : [150, 80, 150]); } catch (e) {}  // iPhone: keine Vibration im Browser
   const box = $("cam");
-  if (box) {
-    box.style.outline = ok ? "6px solid #1e7b3a" : "6px solid #b3261e";
-    setTimeout(() => { box.style.outline = "none"; }, 500);
-  }
+  if (box) { box.style.outline = ok ? "6px solid #1e7b3a" : "6px solid #b3261e"; setTimeout(() => { box.style.outline = "none"; }, 700); }
+}
+function showBanner(kind, title, sub) {
+  const b = $("banner");
+  b.className = "show " + kind;
+  b.innerHTML = esc(title) + (sub ? `<small>${esc(sub)}</small>` : "");
 }
 
 function addScan(rawIn, manual) {
   const raw = rawIn.trim();
   if (!raw) return;
   const now = Date.now();
-  if (!manual && raw === lastRaw && now - lastAt < 2500) return;
-  lastRaw = raw; lastAt = now;
+  // Kamera liest denselben Code im Standbild mehrfach: gleicher Code ohne Pause (< 1,5 s) wird nicht gezählt.
+  // Nach einer Pause zählt er als neuer Karton, auch bei gleicher Charge.
+  if (!manual) {
+    const same = raw === lastRaw && now - lastAt < REPEAT_MS;
+    lastRaw = raw; lastAt = now;
+    if (same) { showBanner("rep", "Wiederholung – nicht gezählt", "Zweiter Karton mit gleicher Charge? Dann Button „Letzten Code +1“ nutzen."); return; }
+  }
   const p = parseGS1(raw);
   const gtin = p["01"] ? p["01"].padStart(14, "0") : null;
   const info = gtin ? MAP[gtin] : null;
@@ -338,9 +385,11 @@ function addScan(rawIn, manual) {
     exp: parseYYMMDD(p["17"]),
   };
   if (!gtin && !p["21"] && !p["10"]) { sc.sn = raw; } // Klartext: Seriennummer
-  scans.push(sc);
-  feedback(!!info);
+  scans.push(sc); lastRec = sc;
   renderScans();
+  if (!info) showBanner("unk", "Nicht im Katalog", `GTIN ${gtin || "–"}`);
+  else showBanner("ok", "✓ " + sc.ref, `${sc.name} · Charge ${sc.lot || "–"} · SN ${sc.sn || "–"}`);
+  feedback(!!info);
 }
 
 function renderScans() {
@@ -355,11 +404,13 @@ window.removeScan = i => { scans.splice(i,1); renderScans(); };
 
 function updateCompare() { $("btnCompare").disabled = !(soll.length && scans.length); }
 
-$("btnAdd").addEventListener("click", () => { addScan($("manual").value, true); $("manual").value = ""; });
+$("btnAdd").addEventListener("click", () => { initAudio(); addScan($("manual").value, true); $("manual").value = ""; });
+$("btnPlus").addEventListener("click", () => { initAudio(); if (lastRec) addScan(lastRec.raw, true); else alert("Noch kein Code erfasst."); });
 $("manual").addEventListener("keydown", e => { if (e.key === "Enter") $("btnAdd").click(); });
 
 /* ---------- Kamera ---------- */
 $("btnCam").addEventListener("click", async () => {
+  initAudio();
   if (!window.ZXing) { alert("Scan-Bibliothek nicht geladen."); return; }
   try {
     reader = new ZXing.BrowserMultiFormatReader();
