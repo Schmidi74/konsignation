@@ -40,10 +40,14 @@
   #banner.rep { background:#6b6b66; }
   #banner.bad { background:#b3261e; }
   #banner small { display:block; font-weight:400; font-size:13px; opacity:.9; margin-top:2px; }
+  .sigwrap { display:flex; gap:12px; flex-wrap:wrap; margin-top:12px; }
+  .sigbox { flex:1; min-width:260px; background:#fff; border:1px solid var(--line); border-radius:8px; padding:8px; }
+  .sigbox canvas { display:block; width:100%; aspect-ratio:3.5/1; height:auto; touch-action:none; background:#fff; border-bottom:1px dashed var(--line); }
+  .sigbox .row { margin-top:6px; }
 </style>
 </head>
 <body>
-<header id="hdr">Konsignationsabgleich <span style="font-size:12px;opacity:.7">· Version 14.11. 09:55</span></header>
+<header id="hdr">Konsignationsabgleich <span style="font-size:12px;opacity:.7">· Version 14.11. 10:19</span></header>
 <main>
 
 <section>
@@ -78,6 +82,13 @@
   <div id="resSum"></div>
   <div id="resBody"></div>
   <div class="row"><button class="primary" id="btnPdf">PDF für Unterschrift</button><button id="btnCsv">CSV herunterladen</button></div>
+  <div class="mut" style="margin-top:10px">Unterschrift direkt auf dem Gerät: mit Finger oder Stift ins Feld schreiben. Die Unterschriften erscheinen dann im PDF.</div>
+  <div class="sigwrap">
+    <div class="sigbox"><div><b>Unterschrift Kunde</b></div><canvas id="sigKunde"></canvas><div class="row"><input type="text" id="nameKunde" placeholder="Name in Druckschrift" style="flex:1"><button id="clrKunde">Löschen</button></div>
+    <div class="row"><input type="text" id="dateKunde" placeholder="Datum" style="flex:1"></div></div>
+    <div class="sigbox"><div><b>Unterschrift MCM Schaublin AG</b></div><canvas id="sigMcm"></canvas><div class="row"><input type="text" id="nameMcm" placeholder="Name in Druckschrift" style="flex:1"><button id="clrMcm">Löschen</button></div>
+    <div class="row"><input type="text" id="dateMcm" placeholder="Datum" style="flex:1"></div></div>
+  </div>
 </section>
 
 </main>
@@ -267,7 +278,7 @@ $("btnOcr").addEventListener("click", async () => {
     soll = res.rows.map(r => ({ ...r }));
     $("sollInfo").innerHTML = `<b>${soll.length} Positionen</b> · ${esc(res.standort || "Standort nicht erkannt")}` +
       (soll.some(s => !s.sn && !s.charge && s.mhdRaw) ? `<div class="err">Achtung: ${soll.filter(s=>!s.sn && !s.charge && s.mhdRaw).length} Position(en) ohne Seriennummer und ohne Charge.</div>` : "");
-    $("hdr").textContent = "Konsignationsabgleich" + (res.standort ? " · " + res.standort : "") + " · V 12.11. 09:40";
+    $("hdr").textContent = "Konsignationsabgleich" + (res.standort ? " · " + res.standort : "") + " · V 14.11. 10:19";
     document.title = "Konsignationsabgleich" + (res.standort ? " · " + res.standort : "");
     updateCompare();
   } catch (e) {
@@ -504,6 +515,7 @@ function lineFor(c, x) {
 
 function renderResult(R) {
   $("resSec").style.display = "block";
+  padKunde.fit(); padMcm.fit();
   const total = CATS.reduce((n, [k]) => n + R[k].length, 0);
   $("resSum").innerHTML = total === 0
     ? `<div class="ok">Keine Abweichungen. ${scans.length} gescannt, ${soll.length} auf der Liste.</div>`
@@ -605,19 +617,62 @@ function buildPdf() {
   y += 10;
   doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(...COL.black);
   doc.text("Der Bestand wurde gemeinsam geprüft. Abweichungen sind oben vermerkt.", L, y); y += 14;
-  const sig = (x0, title) => {
+  const sig = (x0, title, img, name, date) => {
     doc.setFont("helvetica", "bold"); doc.text(title, x0, y);
     doc.setFont("helvetica", "normal");
-    doc.line(x0, y + 14, x0 + 80, y + 14); doc.text("Name, Funktion", x0, y + 18);
-    doc.line(x0, y + 30, x0 + 80, y + 30); doc.text("Unterschrift", x0, y + 34);
-    doc.line(x0, y + 46, x0 + 40, y + 46); doc.text("Datum", x0, y + 50);
+    if (img) doc.addImage(img, "PNG", x0, y + 3, 70, 20);      // Unterschrift aus dem Feld, 3.5:1
+    doc.line(x0, y + 25, x0 + 80, y + 25); doc.text("Unterschrift", x0, y + 29);
+    if (name) doc.text(name, x0 + 1, y + 35);                   // Name aus dem Eingabefeld
+    doc.line(x0, y + 37, x0 + 80, y + 37); doc.text("Name", x0, y + 41);
+    if (date) doc.text(date, x0 + 1, y + 47);                   // Datum aus dem Eingabefeld
+    doc.line(x0, y + 49, x0 + 40, y + 49); doc.text("Datum", x0, y + 53);
   };
-  sig(L, "Kunde");
-  sig(110, "MCM Schaublin AG");
+  sig(L, "Kunde", padKunde.png(), $("nameKunde").value.trim(), $("dateKunde").value.trim());
+  sig(110, "MCM Schaublin AG", padMcm.png(), $("nameMcm").value.trim(), $("dateMcm").value.trim());
 
   const name = "Konsignationsabgleich_" + stand.replace(/[^\wÀ-ž]+/g, "_") + "_" + datum.replace(/\./g, "-") + ".pdf";
   doc.save(name);
 }
+
+/* ---------- Unterschriftsfelder (Finger / Stift / Maus) ---------- */
+function setupPad(id) {
+  const c = $(id), ctx = c.getContext("2d");
+  let drawing = false, has = false, last = null;
+  const fit = () => {
+    const r = c.getBoundingClientRect();
+    if (!r.width) return;                        // Abschnitt noch ausgeblendet
+    const dpr = window.devicePixelRatio || 1;
+    const old = has ? c.toDataURL() : null;
+    c.width = Math.round(r.width * dpr); c.height = Math.round(r.height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.lineWidth = 2.4; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = "#1d1d1b";
+    if (old) { const im = new Image(); im.onload = () => ctx.drawImage(im, 0, 0, r.width, r.height); im.src = old; }
+  };
+  const pos = (e) => { const r = c.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+  c.addEventListener("pointerdown", (e) => { drawing = true; last = pos(e); c.setPointerCapture(e.pointerId); e.preventDefault(); });
+  c.addEventListener("pointermove", (e) => {
+    if (!drawing) return;
+    const p = pos(e); ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+    last = p; has = true; e.preventDefault();
+  });
+  const end = () => { drawing = false; };
+  c.addEventListener("pointerup", end); c.addEventListener("pointercancel", end);
+  window.addEventListener("resize", fit);
+  fit();
+  return {
+    fit,
+    clear() { const r = c.getBoundingClientRect(); ctx.clearRect(0, 0, r.width, r.height); has = false; },
+    has: () => has,
+    png: () => has ? c.toDataURL("image/png") : null
+  };
+}
+const padKunde = setupPad("sigKunde"), padMcm = setupPad("sigMcm");
+(() => {
+  const d = new Date(), t = [String(d.getDate()).padStart(2, "0"), String(d.getMonth() + 1).padStart(2, "0"), d.getFullYear()].join(".");
+  $("dateKunde").value = t; $("dateMcm").value = t;
+})();
+$("clrKunde").addEventListener("click", () => padKunde.clear());
+$("clrMcm").addEventListener("click", () => padMcm.clear());
 
 $("btnPdf").addEventListener("click", () => {
   try { buildPdf(); }
