@@ -623,6 +623,12 @@ function buildPdf() {
   doc.text("Datum: " + datum, L, y); y += 5;
   const missing = soll.filter(x => x.rem > 0).length;
   const devSet = new Set([...R.charge, ...R.mhd, ...R.art].map(x => x.soll));
+  // Grund je Abweichung, z. B. "MHD Ist 31.12.2030", für die Zeile im PDF
+  const reasons = new Map();
+  const addReason = (list, label) => list.forEach(x => { const a = reasons.get(x.soll) || []; a.push(label(x.scan)); reasons.set(x.soll, a); });
+  addReason(R.art, sc => "Artikel Ist " + (sc.ref || "–"));
+  addReason(R.charge, sc => "Charge Ist " + (sc.lot || "–"));
+  addReason(R.mhd, sc => "MHD Ist " + fmtD(sc.exp));
   R.abg.forEach(a => { if (a.kind === "Liste") devSet.add(a.item); });
   doc.text("Soll-Positionen: " + soll.length + " · fehlend: " + missing + " · abweichend: " + devSet.size + " · zusätzlich gescannt: " + R.zus.length, L, y);
   y += 9;
@@ -646,7 +652,8 @@ function buildPdf() {
     doc.setFont("helvetica", "bold"); doc.text(status, cols.st, y);
     y += 4;
     doc.setFont("helvetica", "normal"); doc.setFontSize(7);
-    doc.text(String(x.bez || "").slice(0, 80), cols.art, y);
+    const why = isDev ? (reasons.get(x) || []) : [];
+    doc.text(String(x.bez || "").slice(0, why.length ? 60 : 80) + (why.length ? "  →  " + why.join(", ") : ""), cols.art, y);
     doc.setFontSize(8);
     y += 4.5;
     doc.setTextColor(...COL.black);
