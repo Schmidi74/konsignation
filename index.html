@@ -47,7 +47,7 @@
 </style>
 </head>
 <body>
-<header id="hdr">Konsignationsabgleich <span style="font-size:12px;opacity:.7">· Version 14.11. 10:19</span></header>
+<header id="hdr">Konsignationsabgleich <span style="font-size:12px;opacity:.7">· Version 14.11. 15:12</span></header>
 <main>
 
 <section>
@@ -61,6 +61,7 @@
 <section>
   <h2>2 · Scannen</h2>
   <div class="row">
+    <select id="camSel" style="flex:1"><option value="">Kamera: automatisch (Rückkamera)</option></select>
     <button id="btnCam" class="primary">Kamera starten</button>
     <button id="btnStop" disabled>Kamera stoppen</button>
   </div>
@@ -278,7 +279,7 @@ $("btnOcr").addEventListener("click", async () => {
     soll = res.rows.map(r => ({ ...r }));
     $("sollInfo").innerHTML = `<b>${soll.length} Positionen</b> · ${esc(res.standort || "Standort nicht erkannt")}` +
       (soll.some(s => !s.sn && !s.charge && s.mhdRaw) ? `<div class="err">Achtung: ${soll.filter(s=>!s.sn && !s.charge && s.mhdRaw).length} Position(en) ohne Seriennummer und ohne Charge.</div>` : "");
-    $("hdr").textContent = "Konsignationsabgleich" + (res.standort ? " · " + res.standort : "") + " · V 14.11. 10:19";
+    $("hdr").textContent = "Konsignationsabgleich" + (res.standort ? " · " + res.standort : "") + " · V 14.11. 15:12";
     document.title = "Konsignationsabgleich" + (res.standort ? " · " + res.standort : "");
     updateCompare();
   } catch (e) {
@@ -431,16 +432,33 @@ $("btnPlus").addEventListener("click", () => { initAudio(); if (lastRec) addScan
 $("manual").addEventListener("keydown", e => { if (e.key === "Enter") $("btnAdd").click(); });
 
 /* ---------- Kamera ---------- */
+let camsListed = false;
+async function listCams() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  try { const t = await navigator.mediaDevices.getUserMedia({ video: true }); t.getTracks().forEach(x => x.stop()); } catch (e) {}
+  const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
+  const sel = $("camSel"), cur = sel.value;
+  sel.innerHTML = "";
+  const auto = document.createElement("option"); auto.value = ""; auto.textContent = "Kamera: automatisch (Rückkamera)"; sel.appendChild(auto);
+  devs.forEach((d, i) => { const o = document.createElement("option"); o.value = d.deviceId; o.textContent = d.label || ("Kamera " + (i + 1)); sel.appendChild(o); });
+  if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+  camsListed = true;
+}
 $("btnCam").addEventListener("click", async () => {
   initAudio();
   if (!window.ZXing) { alert("Scan-Bibliothek nicht geladen."); return; }
+  if (!camsListed) await listCams();
   try {
     reader = new ZXing.BrowserMultiFormatReader();
     $("cam").classList.add("on");
-    $("btnCam").disabled = true; $("btnStop").disabled = false;
-    await reader.decodeFromConstraints({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } }, $("cam"), (result) => {
-      if (result) addScan(result.getText(), false);
-    });
+    $("btnCam").disabled = true; $("btnStop").disabled = false; $("camSel").disabled = true;
+    const cb = (result) => { if (result) addScan(result.getText(), false); };
+    const devId = $("camSel").value;
+    if (devId) {
+      await reader.decodeFromVideoDevice(devId, $("cam"), cb);
+    } else {
+      await reader.decodeFromConstraints({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } }, $("cam"), cb);
+    }
   } catch (e) {
     alert("Kamera nicht verfügbar: " + e.message);
     stopCam();
@@ -450,7 +468,7 @@ function stopCam() {
   try { if (reader) reader.reset(); } catch (e) {}
   reader = null;
   $("cam").classList.remove("on");
-  $("btnCam").disabled = false; $("btnStop").disabled = true;
+  $("btnCam").disabled = false; $("btnStop").disabled = true; $("camSel").disabled = false;
 }
 $("btnStop").addEventListener("click", stopCam);
 
