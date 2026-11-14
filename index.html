@@ -313,9 +313,9 @@ $("btnOcr").addEventListener("click", async () => {
   try {
     const res = isXlsx ? await readXlsx(f) : parseSollText(await readPdf(f));
     soll = res.rows.map(r => ({ ...r }));
-    $("sollInfo").innerHTML = `<b>${soll.length} Positionen</b> · ${esc(res.standort || "Standort nicht erkannt")}` +
+    $("sollInfo").innerHTML = `<b>${soll.length} Positionen</b> · Summe <b>${soll.reduce((a, s) => a + (s.qty || 1), 0)}</b> · ${esc(res.standort || "Standort nicht erkannt")}` +
       (soll.some(s => !s.sn && !s.charge && s.mhdRaw) ? `<div class="err">Achtung: ${soll.filter(s=>!s.sn && !s.charge && s.mhdRaw).length} Position(en) ohne Seriennummer und ohne Charge.</div>` : "");
-    $("hdr").textContent = "Konsignationsabgleich" + (res.standort ? " · " + res.standort : "") + " · V 14.11. 15:12";
+    $("hdr").textContent = "Konsignationsabgleich" + (res.standort ? " · " + res.standort : "") + " · V 14.11. 22:35";
     document.title = "Konsignationsabgleich" + (res.standort ? " · " + res.standort : "");
     updateCompare();
   } catch (e) {
