@@ -193,21 +193,57 @@ function parseSollText(text) {
   return { standort, rows };
 }
 
+/* Excel: Testliste (Artikel, Bezeichnung, Menge) und SelectLine-Ergebnismengen (Artikel Nr, Verfallsdatum, Charge, Bezeichnung, Bestand).
+   Spalten werden über die Kopfzeile erkannt, nicht über feste Positionen. */
+function excelDate(serial) {
+  const u = new Date(Math.round((serial - 25569) * 86400) * 1000);   // Excel-Tage seit 30.12.1899
+  return new Date(u.getUTCFullYear(), u.getUTCMonth(), u.getUTCDate()); // lokaler Tagesanfang wie parseDMY
+}
 async function readXlsx(file) {
   if (!window.XLSX) throw new Error("Excel-Bibliothek nicht geladen (Internet prüfen).");
   const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
   const ws = wb.Sheets[wb.SheetNames[0]];
   const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null });
-  const title = String((aoa[0] && aoa[0][0]) || "").trim();
-  const standort = title.replace(/^Inventarliste,?\s*/i, "").trim();
+  const isHead = v => ["Artikel Nr", "Artikel"].includes(String(v ?? "").trim());
+  const h = aoa.findIndex(r => (r || []).some(isHead));
+  if (h < 0) throw new Error("In der Excel-Datei fehlt die Kopfzeile mit „Artikel Nr“ oder „Artikel“.");
+  const head = {};
+  aoa[h].forEach((v, j) => { if (v != null) head[String(v).trim()] = j; });
+  const cArt = head["Artikel Nr"] ?? head["Artikel"];
+  const cQty = head["Bestand"] ?? head["Menge"];
+  const cBez = head["Bezeichnung"], cMhd = head["Verfallsdatum"], cCh = head["Charge"];
+  if (cArt == null || cQty == null) throw new Error("Spalten „Artikel“ und „Bestand“ oder „Menge“ fehlen.");
+
+  // Standort: Textblöcke über der Kopfzeile in der Artikelspalte, MCM-Absender ausgenommen
+  const blocks = []; let last = -10;
+  for (let i = 0; i < h; i++) {
+    const v = aoa[i] ? aoa[i][cArt] : null;
+    if (v == null || typeof v === "number" || String(v).trim() === "") { last = -10; continue; }
+    const t = String(v).trim();
+    if (i === last + 1) blocks[blocks.length - 1].push(t); else blocks.push([t]);
+    last = i;
+  }
+  const cands = blocks.filter(b => !b[0].startsWith("MCM Schaublin"));
+  const chosen = cands.find(b => b[0].startsWith("Inventarliste")) || cands[cands.length - 1] || [];
+  const standort = chosen.join(" · ").replace(/^Inventarliste,?\s*/i, "").trim();
+
   const rows = [];
-  for (const r of aoa) {
-    const a = String((r && r[0]) || "").trim();
-    const m = a.match(/^(GET|IVAS)-(.+)$/i);
-    if (!m) continue;   // Kopfzeilen und Gesamttotal überspringen
-    const art = m[1].toUpperCase() + "-" + m[2].trim();
-    rows.push({ standort, ref: normRef(art), art, bez: String(r[1] || ""), sn: null, charge: null,
-                qty: Number(r[2]) || 0, mhd: null, mhdRaw: "", unklar: false });
+  for (let i = h + 1; i < aoa.length; i++) {
+    const r = aoa[i] || [];
+    const art = String(r[cArt] ?? "").trim();
+    const q = r[cQty];
+    if (!art || q == null || !(typeof q === "number" || /^\d+$/.test(String(q).trim()))) continue;
+    const bez = cBez != null ? String(r[cBez] ?? "") : "";
+    let sn = null, charge = null;
+    if (cCh != null && r[cCh] != null && String(r[cCh]).trim() !== "") {
+      const raw = String(r[cCh]).trim();
+      if (raw.includes("/")) { const [x, y] = raw.split("/").map(t => t.trim()); sn = x || null; charge = y || null; }
+      else if (/^\d{10}$/.test(raw)) sn = raw;
+      else charge = raw;
+    }
+    let mhd = null, mhdRaw = "";
+    if (cMhd != null && typeof r[cMhd] === "number") { mhd = excelDate(r[cMhd]); mhdRaw = fmtD(mhd); }
+    rows.push({ standort, ref: normRef(art), art, bez, sn, charge, qty: Number(q), mhd, mhdRaw, unklar: false });
   }
   return { standort, rows };
 }
